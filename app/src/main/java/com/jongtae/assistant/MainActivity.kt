@@ -43,13 +43,20 @@ class MainActivity : ComponentActivity() {
         if (success) pendingCameraUri?.let { viewModel.addPickedUris(listOf(it)) }
     }
 
-    // 연락처 접근 권한 요청 — 결과를 뷰모델에 반영하고, 허용되면 즉시 한 번 동기화한다.
+    // 연락처 접근 권한 요청 — 결과를 뷰모델에 반영하고, 허용되면 즉시 한 번 동기화 + 감시 등록한다.
     // (자동 동기화 켜짐 시 15분 주기 백그라운드 작업 등록은 viewModel.setAutoSyncContacts에서 이미 처리됨)
     private val requestContactsPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             viewModel.setHasContactsPermission(granted)
-            if (granted) viewModel.syncContactsNow()
+            if (granted) {
+                registerContactsObserverIfPermitted()
+                viewModel.syncContactsNow()
+            }
         }
+
+    // 권한 없이 등록을 시도하면 SecurityException으로 앱이 즉시 죽을 수 있어, 반드시 권한이
+    // 있을 때만 등록하고 중복 등록되지 않도록 상태를 추적한다.
+    private var contactsObserverRegistered = false
 
     // 연락처가 폰에서 변경되면(추가/수정/삭제) 앱이 포그라운드에 있는 동안 즉시 재동기화한다.
     // (백그라운드에서는 WorkManager의 15분 주기 작업이 대신 따라잡는다 — Android는 15분 미만의
@@ -87,18 +94,35 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        contentResolver.registerContentObserver(
-            ContactsContract.Contacts.CONTENT_URI,
-            true,
-            contactsObserver
-        )
-        // 앱이 다시 포그라운드로 올 때 권한 상태가 설정 화면에서 바뀌었을 수 있으니 최신화
+        // 앱이 다시 포그라운드로 올 때 권한 상태가 설정 화면(OS 설정)에서 바뀌었을 수 있으니 먼저 최신화
         viewModel.setHasContactsPermission(hasContactsPermission())
+        registerContactsObserverIfPermitted()
     }
 
     override fun onStop() {
         super.onStop()
+        unregisterContactsObserverIfNeeded()
+    }
+
+    /** READ_CONTACTS 권한이 있을 때만 연락처 변경 감시를 등록한다 — 권한 없이 등록하면 크래시 위험이 있다. */
+    private fun registerContactsObserverIfPermitted() {
+        if (contactsObserverRegistered || !hasContactsPermission()) return
+        try {
+            contentResolver.registerContentObserver(
+                ContactsContract.Contacts.CONTENT_URI,
+                true,
+                contactsObserver
+            )
+            contactsObserverRegistered = true
+        } catch (_: SecurityException) {
+            // 일부 기기/OS 버전에서 권한 체크 타이밍이 달라 예외가 날 수 있어 방어적으로 무시
+        }
+    }
+
+    private fun unregisterContactsObserverIfNeeded() {
+        if (!contactsObserverRegistered) return
         contentResolver.unregisterContentObserver(contactsObserver)
+        contactsObserverRegistered = false
     }
 
     override fun onNewIntent(intent: Intent) {
