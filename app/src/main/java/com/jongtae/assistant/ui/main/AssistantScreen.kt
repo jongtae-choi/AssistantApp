@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -82,6 +83,12 @@ import com.jongtae.assistant.ui.theme.TxtPrimary
 import com.jongtae.assistant.ui.theme.TxtSecondary
 import com.jongtae.assistant.ui.theme.TxtTertiary
 
+// 앱 신규 설치 후 아직 아무 값도 저장되지 않았을 때, 설정 화면에 미리 채워서 보여줄 기본값.
+// 사용자가 그대로 저장해도 되고, 필요하면 직접 수정한 뒤 저장해도 된다.
+private const val DEFAULT_BASE_URL = "https://scorn-snowdrop-crablike.ngrok-free.dev"
+private const val DEFAULT_TOKEN = "MyAssistantSecret2026!"
+private const val DEFAULT_EMAIL = "feb9502@gmail.com"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AssistantApp(
@@ -90,7 +97,9 @@ fun AssistantApp(
     onPickFiles: () -> Unit,
     onTakePhoto: () -> Unit,
     onRequestContactsPermission: () -> Unit,
-    onVoiceInput: () -> Unit
+    onVoiceInput: () -> Unit,
+    onPickCalendarImages: () -> Unit,
+    onTakeCalendarPhoto: () -> Unit
 ) {
     val ui by viewModel.uiState.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
@@ -104,9 +113,13 @@ fun AssistantApp(
                     titleContentColor = TxtPrimary
                 ),
                 navigationIcon = {
-                    if (ui.showArchive || showSettings) {
+                    if (ui.showArchive || ui.showCalendar || showSettings) {
                         IconButton(onClick = {
-                            if (ui.showArchive) viewModel.closeArchive() else showSettings = false
+                            when {
+                                ui.showArchive -> viewModel.closeArchive()
+                                ui.showCalendar -> viewModel.closeCalendar()
+                                else -> showSettings = false
+                            }
                         }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로", tint = TxtSecondary)
                         }
@@ -115,6 +128,7 @@ fun AssistantApp(
                 title = {
                     when {
                         ui.showArchive -> Text("저장된 이미지 보관함", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TxtPrimary)
+                        ui.showCalendar -> Text("캘린더 일정 등록", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TxtPrimary)
                         showSettings -> Text("서버 연결 설정", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TxtPrimary)
                         else -> Row(verticalAlignment = Alignment.CenterVertically) {
                             Surface(shape = RoundedCornerShape(8.dp), color = AccentBlue2, modifier = Modifier.size(30.dp)) {
@@ -128,7 +142,10 @@ fun AssistantApp(
                     }
                 },
                 actions = {
-                    if (ui.isConfigured && !showSettings && !ui.showArchive) {
+                    if (ui.isConfigured && !showSettings && !ui.showArchive && !ui.showCalendar) {
+                        IconButton(onClick = { viewModel.openCalendar() }) {
+                            Icon(Icons.Default.Event, contentDescription = "캘린더 일정 등록", tint = TxtSecondary)
+                        }
                         IconButton(onClick = { viewModel.openArchive() }) {
                             Icon(Icons.Default.Folder, contentDescription = "보관함", tint = TxtSecondary)
                         }
@@ -148,9 +165,11 @@ fun AssistantApp(
         ) {
             when {
                 showSettings || !ui.isConfigured -> SettingsForm(
-                    initialBaseUrl = ui.baseUrl,
-                    initialToken = ui.token,
-                    initialEmail = ui.defaultEmail,
+                    // 아직 저장된 값이 없으면(신규 설치) 기본값을 미리 채워서 보여준다 — 그대로 저장해도 되고
+                    // 필요하면 고쳐서 저장해도 된다. 이미 저장된 값이 있으면(재설정) 그 값을 그대로 보여준다.
+                    initialBaseUrl = ui.baseUrl.ifBlank { DEFAULT_BASE_URL },
+                    initialToken = ui.token.ifBlank { DEFAULT_TOKEN },
+                    initialEmail = ui.defaultEmail.ifBlank { DEFAULT_EMAIL },
                     onSave = { url, token, email ->
                         viewModel.saveSettings(url, token, email)
                         showSettings = false
@@ -170,6 +189,11 @@ fun AssistantApp(
                     }
                 )
                 ui.showArchive -> ArchiveScreen(viewModel = viewModel)
+                ui.showCalendar -> CalendarScreen(
+                    viewModel = viewModel,
+                    onPickImages = onPickCalendarImages,
+                    onTakePhoto = onTakeCalendarPhoto
+                )
                 else -> MainContent(
                     viewModel = viewModel,
                     onPickImages = onPickImages,

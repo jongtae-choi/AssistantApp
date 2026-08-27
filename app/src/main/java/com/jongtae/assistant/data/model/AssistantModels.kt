@@ -156,3 +156,37 @@ data class LedgerEntriesResponse(
 
 data class LedgerDeleteRequest(val ledger: String, val id: String)
 data class LedgerDeleteResponse(val ok: Boolean = false, val count: Int = 0, val balance: Double = 0.0)
+
+// ══════════════════════ 캘린더 일정 등록 ══════════════════════
+// 달력/일정표 사진을 올리면 서버(Claude)가 일정 목록을 읽어주고(추출),
+// 사용자가 확인/수정한 뒤 실제로 구글 캘린더에 등록한다.
+
+data class CalendarEventDraft(
+    val title: String = "",
+    val date: String = "",          // "YYYY-MM-DD"
+    val startTime: String? = null,  // "HH:MM" (null이면 종일 일정)
+    val endTime: String? = null,
+    val allDay: Boolean = false,
+    val description: String = ""
+)
+
+data class ExtractEventsResponse(val events: List<CalendarEventDraft> = emptyList())
+
+data class RegisterEventsRequest(val events: List<CalendarEventDraft>)
+
+data class RegisteredEvent(
+    val title: String = "",
+    val date: String = "",
+    val htmlLink: String? = null
+)
+
+data class FailedEvent(
+    val event: CalendarEventDraft? = null,
+    val error: String? = null
+)
+
+data class RegisterEventsResponse(
+    val ok: Boolean = false,
+    val registered: List<RegisteredEvent> = emptyList(),
+    val failed: List<FailedEvent> = emptyList()
+)

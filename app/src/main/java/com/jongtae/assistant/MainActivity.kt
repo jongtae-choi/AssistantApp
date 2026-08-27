@@ -46,6 +46,18 @@ class MainActivity : ComponentActivity() {
         if (success) pendingCameraUri?.let { viewModel.addPickedUris(listOf(it)) }
     }
 
+    // ── 캘린더 일정 등록 화면 전용 사진 선택/촬영 (메인 화면의 선택 목록과는 별개로 관리) ──
+    private var pendingCalendarCameraUri: Uri? = null
+
+    private val pickCalendarImagesLauncher =
+        registerForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+            if (uris.isNotEmpty()) viewModel.addCalendarPickedUris(uris)
+        }
+
+    private val takeCalendarPictureLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) pendingCalendarCameraUri?.let { viewModel.addCalendarPickedUris(listOf(it)) }
+    }
+
     // 연락처 접근 권한 요청 — 결과를 뷰모델에 반영하고, 허용되면 즉시 한 번 동기화 + 감시 등록한다.
     // (자동 동기화 켜짐 시 15분 주기 백그라운드 작업 등록은 viewModel.setAutoSyncContacts에서 이미 처리됨)
     private val requestContactsPermissionLauncher =
@@ -60,14 +72,17 @@ class MainActivity : ComponentActivity() {
     // 카메라 촬영 권한 요청 — 매니페스트에 CAMERA 권한을 선언해두면, 런타임에 실제로
     // 허용받기 전까지는 ACTION_IMAGE_CAPTURE(카메라 앱 실행) 자체가 실패한다(크래시 원인).
     // 그래서 촬영 버튼을 누를 때마다 먼저 권한이 있는지 확인하고, 없으면 요청부터 한다.
+    // (메인 화면 촬영/캘린더 화면 촬영 둘 다 이 한 곳에서 처리 — pendingCameraAction에
+    //  "권한 허용되면 할 일"을 담아뒀다가, 허용되면 그걸 실행한다)
+    private var pendingCameraAction: (() -> Unit)? = null
+
     private val requestCameraPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) launchCamera()
+            if (granted) pendingCameraAction?.invoke()
+            pendingCameraAction = null
             // 거부되면 아무 것도 하지 않는다 (버튼을 다시 누르면 재요청됨)
         }
 
-    // 권한 없이 등록을 시도하면 SecurityException으로 앱이 즉시 죽을 수 있어, 반드시 권한이
-    // 있을 때만 등록하고 중복 등록되지 않도록 상태를 추적한다.
     // 음성으로 지시사항 입력 — 안드로이드 기본 음성 인식(구글) 화면을 띄워서 인식된
     // 텍스트만 돌려받는다. 녹음 자체는 그 화면(구글 앱)이 처리하므로 별도의 RECORD_AUDIO
     // 권한 요청이 필요 없다.
@@ -81,6 +96,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // 권한 없이 등록을 시도하면 SecurityException으로 앱이 즉시 죽을 수 있어, 반드시 권한이
+    // 있을 때만 등록하고 중복 등록되지 않도록 상태를 추적한다.
     private var contactsObserverRegistered = false
 
     // 연락처가 폰에서 변경되면(추가/수정/삭제) 앱이 포그라운드에 있는 동안 즉시 재동기화한다.
@@ -112,7 +129,9 @@ class MainActivity : ComponentActivity() {
                     onRequestContactsPermission = {
                         requestContactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
                     },
-                    onVoiceInput = { launchVoiceInput() }
+                    onVoiceInput = { launchVoiceInput() },
+                    onPickCalendarImages = { pickCalendarImagesLauncher.launch("image/*") },
+                    onTakeCalendarPhoto = { launchCalendarCamera() }
                 )
             }
         }
@@ -190,15 +209,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun launchCamera() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+    /** CAMERA 권한이 있으면 바로 action을 실행하고, 없으면 요청부터 한 뒤 허용되면 실행한다. */
+    private fun ensureCameraPermission(action: () -> Unit) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            action()
+        } else {
+            pendingCameraAction = action
             requestCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            return
         }
+    }
+
+    private fun launchCamera() = ensureCameraPermission {
         val imagesDir = File(cacheDir, "images").apply { mkdirs() }
         val file = File(imagesDir, "camera_${System.currentTimeMillis()}.jpg")
         val uri = FileProvider.getUriForFile(this, "com.jongtae.assistant.fileprovider", file)
         pendingCameraUri = uri
         takePictureLauncher.launch(uri)
+    }
+
+    private fun launchCalendarCamera() = ensureCameraPermission {
+        val imagesDir = File(cacheDir, "images").apply { mkdirs() }
+        val file = File(imagesDir, "calendar_${System.currentTimeMillis()}.jpg")
+        val uri = FileProvider.getUriForFile(this, "com.jongtae.assistant.fileprovider", file)
+        pendingCalendarCameraUri = uri
+        takeCalendarPictureLauncher.launch(uri)
     }
 }

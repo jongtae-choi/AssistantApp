@@ -3,6 +3,9 @@ package com.jongtae.assistant.data.network
 import com.jongtae.assistant.data.model.AnalyzeResponse
 import com.jongtae.assistant.data.model.ArchiveResponse
 import com.jongtae.assistant.data.model.ContactsSyncRequest
+import com.jongtae.assistant.data.model.ExtractEventsResponse
+import com.jongtae.assistant.data.model.RegisterEventsRequest
+import com.jongtae.assistant.data.model.RegisterEventsResponse
 import com.jongtae.assistant.data.model.ContactsSyncResponse
 import com.jongtae.assistant.data.model.HealthResponse
 import com.jongtae.assistant.data.model.LedgerDeleteRequest
@@ -125,4 +128,18 @@ interface AssistantApiService {
     // 잘못 저장한 항목 하나 삭제
     @POST("assistant/api/ledger/delete-entry")
     suspend fun deleteLedgerEntry(@Body body: LedgerDeleteRequest): LedgerDeleteResponse
+
+    // ── 캘린더 일정 등록 ──
+
+    // 달력/일정표 사진에서 일정 목록만 뽑아낸다 (아직 등록 안 함, 확인용)
+    @Multipart
+    @POST("assistant/api/extract-events")
+    suspend fun extractEvents(
+        @Part photos: List<MultipartBody.Part>,
+        @Part("instruction") instruction: RequestBody?
+    ): ExtractEventsResponse
+
+    // 확인/수정된 일정 목록을 실제로 구글 캘린더에 등록
+    @POST("assistant/api/register-events")
+    suspend fun registerEvents(@Body body: RegisterEventsRequest): RegisterEventsResponse
 }

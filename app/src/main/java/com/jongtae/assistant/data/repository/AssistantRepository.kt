@@ -7,6 +7,7 @@ import android.webkit.MimeTypeMap
 import com.jongtae.assistant.data.model.AnalyzeResponse
 import com.jongtae.assistant.data.model.ArchiveGroup
 import com.jongtae.assistant.data.model.ArchiveEntry
+import com.jongtae.assistant.data.model.CalendarEventDraft
 import com.jongtae.assistant.data.model.ContactsSyncRequest
 import com.jongtae.assistant.data.model.LedgerDeleteRequest
 import com.jongtae.assistant.data.model.LedgerDeleteResponse
@@ -17,6 +18,8 @@ import com.jongtae.assistant.data.model.LedgerSaveResponse
 import com.jongtae.assistant.data.model.LedgerSummary
 import com.jongtae.assistant.data.model.PhotoDocumentResponse
 import com.jongtae.assistant.data.model.PipelineAckResponse
+import com.jongtae.assistant.data.model.RegisterEventsRequest
+import com.jongtae.assistant.data.model.RegisterEventsResponse
 import com.jongtae.assistant.data.model.ResearchRequest
 import com.jongtae.assistant.data.model.SaveOutputItem
 import com.jongtae.assistant.data.model.SaveOutputsRequest
@@ -168,4 +171,16 @@ class AssistantRepository(
     /** 잘못 저장한 항목 하나를 삭제한다. */
     suspend fun deleteLedgerEntry(ledgerName: String, id: String): LedgerDeleteResponse =
         api.deleteLedgerEntry(LedgerDeleteRequest(ledgerName, id))
+
+    // ── 캘린더 일정 등록 ──
+
+    /** 달력/일정표 사진에서 일정 목록을 뽑아낸다 (아직 등록 안 됨). */
+    suspend fun extractCalendarEvents(uris: List<Uri>, instruction: String): List<CalendarEventDraft> {
+        val parts = urisToParts(uris)
+        return api.extractEvents(parts, textOrNull(instruction)).events
+    }
+
+    /** 확인/수정된 일정 목록을 실제로 구글 캘린더에 등록한다. */
+    suspend fun registerCalendarEvents(events: List<CalendarEventDraft>): RegisterEventsResponse =
+        api.registerEvents(RegisterEventsRequest(events))
 }

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.jongtae.assistant.data.contacts.ContactsSyncManager
 import com.jongtae.assistant.data.contacts.ContactsSyncWorker
 import com.jongtae.assistant.data.model.ArchiveGroup
+import com.jongtae.assistant.data.model.CalendarEventDraft
 import com.jongtae.assistant.data.model.Citation
 import com.jongtae.assistant.data.model.LedgerEntryDraft
 import com.jongtae.assistant.data.model.LedgerGroup
@@ -103,7 +104,18 @@ data class AssistantUiState(
     val ledgerBalance: Double = 0.0,
     val ledgerQuery: String = "",
     val isLoadingLedgerEntries: Boolean = false,
-    val ledgerEntriesError: String? = null
+    val ledgerEntriesError: String? = null,
+
+    // ── 캘린더 일정 등록: 달력/일정표 사진 → 일정 추출(확인) → 구글 캘린더 등록 ──
+    val showCalendar: Boolean = false,
+    val calendarPickedUris: List<Uri> = emptyList(),
+    val calendarInstruction: String = "",
+    val isExtractingEvents: Boolean = false,
+    val calendarExtractError: String? = null,
+    val calendarDraftEvents: List<CalendarEventDraft> = emptyList(),
+    val isRegisteringEvents: Boolean = false,
+    val calendarRegisterError: String? = null,
+    val calendarRegisterMessage: String? = null
 ) {
     /** "근거표시" 체크 시 지시사항 뒤에 문구를 붙여서 하나의 문자열로 합친다 — Claude API로 그대로 전송됨 */
     val combinedInstruction: String
@@ -665,5 +677,130 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun dismissLedgerSaveMessage() {
         _uiState.value = _uiState.value.copy(ledgerSaveMessage = null)
+    }
+
+    // ══════════════════════ 캘린더 일정 등록 ══════════════════════
+
+    fun openCalendar() {
+        _uiState.value = _uiState.value.copy(showCalendar = true)
+    }
+
+    fun closeCalendar() {
+        _uiState.value = _uiState.value.copy(
+            showCalendar = false,
+            calendarPickedUris = emptyList(),
+            calendarDraftEvents = emptyList(),
+            calendarInstruction = "",
+            calendarExtractError = null,
+            calendarRegisterError = null,
+            calendarRegisterMessage = null
+        )
+    }
+
+    fun addCalendarPickedUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val merged = (_uiState.value.calendarPickedUris + uris).distinct()
+        _uiState.value = _uiState.value.copy(calendarPickedUris = merged, calendarExtractError = null)
+    }
+
+    fun removeCalendarPickedUri(uri: Uri) {
+        _uiState.value = _uiState.value.copy(calendarPickedUris = _uiState.value.calendarPickedUris - uri)
+    }
+
+    fun clearCalendarPickedUris() {
+        _uiState.value = _uiState.value.copy(calendarPickedUris = emptyList())
+    }
+
+    fun setCalendarInstruction(text: String) {
+        _uiState.value = _uiState.value.copy(calendarInstruction = text)
+    }
+
+    fun extractCalendarEvents() {
+        val repo = repository ?: return
+        val state = _uiState.value
+        if (state.calendarPickedUris.isEmpty()) {
+            _uiState.value = state.copy(calendarExtractError = "먼저 달력/일정표 사진을 선택해주세요")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isExtractingEvents = true, calendarExtractError = null, calendarDraftEvents = emptyList()
+            )
+            try {
+                val events = repo.extractCalendarEvents(state.calendarPickedUris, state.calendarInstruction)
+                _uiState.value = _uiState.value.copy(
+                    isExtractingEvents = false,
+                    calendarDraftEvents = events,
+                    calendarExtractError = if (events.isEmpty()) "사진에서 일정을 찾지 못했습니다" else null
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isExtractingEvents = false,
+                    calendarExtractError = "추출 실패: ${e.message ?: "알 수 없는 오류"}"
+                )
+            }
+        }
+    }
+
+    fun updateCalendarDraftEvent(index: Int, updated: CalendarEventDraft) {
+        val list = _uiState.value.calendarDraftEvents.toMutableList()
+        if (index in list.indices) {
+            list[index] = updated
+            _uiState.value = _uiState.value.copy(calendarDraftEvents = list)
+        }
+    }
+
+    fun removeCalendarDraftEvent(index: Int) {
+        val list = _uiState.value.calendarDraftEvents.toMutableList()
+        if (index in list.indices) {
+            list.removeAt(index)
+            _uiState.value = _uiState.value.copy(calendarDraftEvents = list)
+        }
+    }
+
+    fun addBlankCalendarDraftEvent() {
+        _uiState.value = _uiState.value.copy(
+            calendarDraftEvents = _uiState.value.calendarDraftEvents + CalendarEventDraft()
+        )
+    }
+
+    fun confirmRegisterCalendarEvents() {
+        val repo = repository ?: return
+        val state = _uiState.value
+        val invalid = state.calendarDraftEvents.any { it.title.isBlank() || it.date.isBlank() }
+        if (state.calendarDraftEvents.isEmpty()) {
+            _uiState.value = state.copy(calendarRegisterError = "등록할 일정이 없습니다")
+            return
+        }
+        if (invalid) {
+            _uiState.value = state.copy(calendarRegisterError = "모든 일정에 제목과 날짜를 입력해주세요")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isRegisteringEvents = true, calendarRegisterError = null)
+            try {
+                val res = repo.registerCalendarEvents(state.calendarDraftEvents)
+                val message = buildString {
+                    append("${res.registered.size}건 캘린더에 등록 완료")
+                    if (res.failed.isNotEmpty()) append(" · ${res.failed.size}건 실패")
+                }
+                _uiState.value = _uiState.value.copy(
+                    isRegisteringEvents = false,
+                    calendarRegisterMessage = message,
+                    // 실패한 일정만 남겨서 고친 뒤 다시 등록할 수 있게 한다 (전부 성공했으면 비움)
+                    calendarDraftEvents = res.failed.mapNotNull { it.event },
+                    calendarPickedUris = emptyList()
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isRegisteringEvents = false,
+                    calendarRegisterError = "등록 실패: ${e.message ?: "알 수 없는 오류"}"
+                )
+            }
+        }
+    }
+
+    fun dismissCalendarRegisterMessage() {
+        _uiState.value = _uiState.value.copy(calendarRegisterMessage = null)
     }
 }
