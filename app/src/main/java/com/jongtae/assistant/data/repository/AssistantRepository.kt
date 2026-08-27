@@ -8,8 +8,16 @@ import com.jongtae.assistant.data.model.AnalyzeResponse
 import com.jongtae.assistant.data.model.ArchiveGroup
 import com.jongtae.assistant.data.model.ArchiveEntry
 import com.jongtae.assistant.data.model.ContactsSyncRequest
+import com.jongtae.assistant.data.model.LedgerDeleteRequest
+import com.jongtae.assistant.data.model.LedgerDeleteResponse
+import com.jongtae.assistant.data.model.LedgerEntriesResponse
+import com.jongtae.assistant.data.model.LedgerEntryDraft
+import com.jongtae.assistant.data.model.LedgerSaveRequest
+import com.jongtae.assistant.data.model.LedgerSaveResponse
+import com.jongtae.assistant.data.model.LedgerSummary
 import com.jongtae.assistant.data.model.PhotoDocumentResponse
 import com.jongtae.assistant.data.model.PipelineAckResponse
+import com.jongtae.assistant.data.model.ResearchRequest
 import com.jongtae.assistant.data.model.SaveOutputItem
 import com.jongtae.assistant.data.model.SaveOutputsRequest
 import com.jongtae.assistant.data.model.SuggestTitlesRequest
@@ -67,6 +75,9 @@ class AssistantRepository(
         val parts = urisToParts(uris)
         return api.analyzeImage(parts, text(instruction))
     }
+
+    /** 사진 없이 순수 지시사항(+웹서치)만으로 답변을 받는다. */
+    suspend fun research(prompt: String): AnalyzeResponse = api.research(ResearchRequest(prompt))
 
     suspend fun pipelinePhotoToGmail(
         uri: Uri,
@@ -134,4 +145,27 @@ class AssistantRepository(
         val res = api.syncContacts(ContactsSyncRequest(ownerId = ownerId, vcf = vcf))
         return res.ok to res.count
     }
+
+    // ── 가계부(장부) ──
+
+    /** 영수증/서류 사진에서 거래 항목 초안을 뽑아낸다 (아직 저장 안 됨). */
+    suspend fun extractLedgerEntries(uris: List<Uri>, instruction: String): List<LedgerEntryDraft> {
+        val parts = urisToParts(uris)
+        return api.extractLedgerEntries(parts, textOrNull(instruction)).entries
+    }
+
+    /** 확인/수정된 항목들을 이름 붙인 장부에 실제로 저장(누적)한다. */
+    suspend fun saveLedgerEntries(ledgerName: String, entries: List<LedgerEntryDraft>): LedgerSaveResponse =
+        api.saveLedgerEntries(LedgerSaveRequest(ledgerName, entries))
+
+    /** 지금까지 등록된 장부 목록(이름/건수/잔액)을 조회한다. */
+    suspend fun listLedgers(): List<LedgerSummary> = api.listLedgers().ledgers
+
+    /** 특정 장부의 내역을 월별로 조회한다. */
+    suspend fun getLedgerEntries(ledgerName: String, query: String? = null): LedgerEntriesResponse =
+        api.getLedgerEntries(ledgerName, query?.ifBlank { null })
+
+    /** 잘못 저장한 항목 하나를 삭제한다. */
+    suspend fun deleteLedgerEntry(ledgerName: String, id: String): LedgerDeleteResponse =
+        api.deleteLedgerEntry(LedgerDeleteRequest(ledgerName, id))
 }

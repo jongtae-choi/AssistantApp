@@ -1,6 +1,7 @@
 package com.jongtae.assistant
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.ContentObserver
@@ -9,6 +10,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.ContactsContract
+import android.speech.RecognizerIntent
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,8 +57,30 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // 카메라 촬영 권한 요청 — 매니페스트에 CAMERA 권한을 선언해두면, 런타임에 실제로
+    // 허용받기 전까지는 ACTION_IMAGE_CAPTURE(카메라 앱 실행) 자체가 실패한다(크래시 원인).
+    // 그래서 촬영 버튼을 누를 때마다 먼저 권한이 있는지 확인하고, 없으면 요청부터 한다.
+    private val requestCameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) launchCamera()
+            // 거부되면 아무 것도 하지 않는다 (버튼을 다시 누르면 재요청됨)
+        }
+
     // 권한 없이 등록을 시도하면 SecurityException으로 앱이 즉시 죽을 수 있어, 반드시 권한이
     // 있을 때만 등록하고 중복 등록되지 않도록 상태를 추적한다.
+    // 음성으로 지시사항 입력 — 안드로이드 기본 음성 인식(구글) 화면을 띄워서 인식된
+    // 텍스트만 돌려받는다. 녹음 자체는 그 화면(구글 앱)이 처리하므로 별도의 RECORD_AUDIO
+    // 권한 요청이 필요 없다.
+    private val voiceInputLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                val text = result.data
+                    ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                    ?.firstOrNull()
+                if (!text.isNullOrBlank()) viewModel.appendVoiceInstructionText(text)
+            }
+        }
+
     private var contactsObserverRegistered = false
 
     // 연락처가 폰에서 변경되면(추가/수정/삭제) 앱이 포그라운드에 있는 동안 즉시 재동기화한다.
@@ -86,7 +111,8 @@ class MainActivity : ComponentActivity() {
                     onTakePhoto = { launchCamera() },
                     onRequestContactsPermission = {
                         requestContactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
-                    }
+                    },
+                    onVoiceInput = { launchVoiceInput() }
                 )
             }
         }
@@ -150,7 +176,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 음성 인식 화면을 띄워서 말한 내용을 텍스트로 받아온다 (지시사항 입력용). */
+    private fun launchVoiceInput() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "지시사항을 말씀해주세요")
+        }
+        if (intent.resolveActivity(packageManager) != null) {
+            voiceInputLauncher.launch(intent)
+        } else {
+            Toast.makeText(this, "이 기기에서는 음성 인식을 사용할 수 없어요", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun launchCamera() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            return
+        }
         val imagesDir = File(cacheDir, "images").apply { mkdirs() }
         val file = File(imagesDir, "camera_${System.currentTimeMillis()}.jpg")
         val uri = FileProvider.getUriForFile(this, "com.jongtae.assistant.fileprovider", file)

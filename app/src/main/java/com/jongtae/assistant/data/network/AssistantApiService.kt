@@ -5,8 +5,16 @@ import com.jongtae.assistant.data.model.ArchiveResponse
 import com.jongtae.assistant.data.model.ContactsSyncRequest
 import com.jongtae.assistant.data.model.ContactsSyncResponse
 import com.jongtae.assistant.data.model.HealthResponse
+import com.jongtae.assistant.data.model.LedgerDeleteRequest
+import com.jongtae.assistant.data.model.LedgerDeleteResponse
+import com.jongtae.assistant.data.model.LedgerEntriesResponse
+import com.jongtae.assistant.data.model.LedgerExtractResponse
+import com.jongtae.assistant.data.model.LedgerListResponse
+import com.jongtae.assistant.data.model.LedgerSaveRequest
+import com.jongtae.assistant.data.model.LedgerSaveResponse
 import com.jongtae.assistant.data.model.PhotoDocumentResponse
 import com.jongtae.assistant.data.model.PipelineAckResponse
+import com.jongtae.assistant.data.model.ResearchRequest
 import com.jongtae.assistant.data.model.SaveOutputsRequest
 import com.jongtae.assistant.data.model.SaveOutputsResponse
 import com.jongtae.assistant.data.model.SuggestTitlesRequest
@@ -32,6 +40,10 @@ interface AssistantApiService {
         @Part files: List<MultipartBody.Part>,
         @Part("instruction") instruction: RequestBody
     ): AnalyzeResponse
+
+    // 사진 없이 순수 지시사항(+웹서치)만으로 답변받기
+    @POST("assistant/api/research")
+    suspend fun research(@Body body: ResearchRequest): AnalyzeResponse
 
     @Multipart
     @POST("assistant/api/pipeline/photo-to-gmail")
@@ -84,4 +96,33 @@ interface AssistantApiService {
 
     @GET("assistant/api/health")
     suspend fun health(): HealthResponse
+
+    // ── 가계부(장부) ──
+
+    // 영수증/서류 사진에서 거래 항목 초안을 뽑아낸다 (아직 저장 안 됨)
+    @Multipart
+    @POST("assistant/api/ledger/extract")
+    suspend fun extractLedgerEntries(
+        @Part photos: List<MultipartBody.Part>,
+        @Part("instruction") instruction: RequestBody?
+    ): LedgerExtractResponse
+
+    // 확인된 항목을 이름 붙인 장부에 실제로 저장(누적)한다
+    @POST("assistant/api/ledger/save")
+    suspend fun saveLedgerEntries(@Body body: LedgerSaveRequest): LedgerSaveResponse
+
+    // 지금까지 등록된 장부 목록(이름/건수/잔액)
+    @GET("assistant/api/ledger/list")
+    suspend fun listLedgers(): LedgerListResponse
+
+    // 특정 장부의 내역을 월별로 조회
+    @GET("assistant/api/ledger/entries")
+    suspend fun getLedgerEntries(
+        @Query("ledger") ledger: String,
+        @Query("q") q: String? = null
+    ): LedgerEntriesResponse
+
+    // 잘못 저장한 항목 하나 삭제
+    @POST("assistant/api/ledger/delete-entry")
+    suspend fun deleteLedgerEntry(@Body body: LedgerDeleteRequest): LedgerDeleteResponse
 }

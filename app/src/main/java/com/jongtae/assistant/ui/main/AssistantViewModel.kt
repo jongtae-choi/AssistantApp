@@ -8,6 +8,9 @@ import com.jongtae.assistant.data.contacts.ContactsSyncManager
 import com.jongtae.assistant.data.contacts.ContactsSyncWorker
 import com.jongtae.assistant.data.model.ArchiveGroup
 import com.jongtae.assistant.data.model.Citation
+import com.jongtae.assistant.data.model.LedgerEntryDraft
+import com.jongtae.assistant.data.model.LedgerGroup
+import com.jongtae.assistant.data.model.LedgerSummary
 import com.jongtae.assistant.data.network.ApiProvider
 import com.jongtae.assistant.data.network.AssistantApiService
 import com.jongtae.assistant.data.repository.AssistantRepository
@@ -77,7 +80,30 @@ data class AssistantUiState(
     val lastSyncAt: Long = 0L,
     val lastSyncCount: Int = 0,
     val isSyncingContacts: Boolean = false,
-    val contactsSyncError: String? = null
+    val contactsSyncError: String? = null,
+
+    // ── 가계부(장부): 영수증/통장내역 등을 사진으로 찍어 항목별로 누적 기록 ──
+    val showLedger: Boolean = false,
+    val ledgerPickedUris: List<Uri> = emptyList(),
+    val ledgerInstruction: String = "",
+    val isExtractingLedger: Boolean = false,
+    val ledgerExtractError: String? = null,
+    val ledgerDraftEntries: List<LedgerEntryDraft> = emptyList(), // 추출 후 사용자가 확인/수정 중인 항목들
+    val ledgerTargetName: String = "", // 저장할 장부 이름 (기존 선택 또는 새로 입력)
+    val isSavingLedger: Boolean = false,
+    val ledgerSaveError: String? = null,
+    val ledgerSaveMessage: String? = null,
+
+    val ledgerList: List<LedgerSummary> = emptyList(),
+    val isLoadingLedgerList: Boolean = false,
+    val ledgerListError: String? = null,
+
+    val selectedLedgerName: String? = null, // null이면 목록 화면, 값이 있으면 그 장부의 상세(월별 내역) 화면
+    val ledgerGroups: List<LedgerGroup> = emptyList(),
+    val ledgerBalance: Double = 0.0,
+    val ledgerQuery: String = "",
+    val isLoadingLedgerEntries: Boolean = false,
+    val ledgerEntriesError: String? = null
 ) {
     /** "근거표시" 체크 시 지시사항 뒤에 문구를 붙여서 하나의 문자열로 합친다 — Claude API로 그대로 전송됨 */
     val combinedInstruction: String
@@ -153,19 +179,40 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setYoutubeUrl(text: String) { _uiState.value = _uiState.value.copy(youtubeUrl = text) }
     fun setInstruction(text: String) { _uiState.value = _uiState.value.copy(instruction = text) }
+
+    /** 음성 인식으로 받은 텍스트를 지시사항에 반영한다. 이미 입력된 내용이 있으면 뒤에 이어붙인다
+     *  (말한 내용을 통째로 덮어써서 기존에 적어둔 내용이 사라지지 않도록). */
+    fun appendVoiceInstructionText(text: String) {
+        val current = _uiState.value.instruction
+        val merged = if (current.isBlank()) text else "$current $text"
+        _uiState.value = _uiState.value.copy(instruction = merged)
+    }
     fun setShowEvidence(checked: Boolean) { _uiState.value = _uiState.value.copy(showEvidence = checked) }
 
     fun analyze() {
         val repo = repository ?: return
         val state = _uiState.value
-        if (state.pickedUris.isEmpty() && state.youtubeUrl.isBlank()) {
-            _uiState.value = state.copy(analyzeError = "먼저 사진/파일을 선택하거나 유튜브 링크를 입력해주세요")
+        // 사진/파일도 없고, 유튜브 링크도 없고, 지시사항 텍스트도 없으면 분석할 내용 자체가 없다.
+        // (사진 없이 지시사항만으로도 요청할 수 있도록, 이 셋 중 하나만 있으면 진행한다)
+        if (state.pickedUris.isEmpty() && state.youtubeUrl.isBlank() && state.instruction.isBlank()) {
+            _uiState.value = state.copy(analyzeError = "사진/파일을 선택하거나, 유튜브 링크 또는 지시사항 중 하나는 입력해주세요")
             return
         }
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isAnalyzing = true, analyzeError = null, resultText = null)
             try {
-                val res = repo.analyzeImage(_uiState.value.pickedUris, _uiState.value.combinedInstruction)
+                val res = if (state.pickedUris.isNotEmpty()) {
+                    repo.analyzeImage(state.pickedUris, state.combinedInstruction)
+                } else {
+                    // 사진 없이 지시사항(+ 있다면 유튜브 링크 언급)만으로 웹서치 기반 답변을 받는다
+                    val prompt = buildString {
+                        if (state.youtubeUrl.isNotBlank()) {
+                            append("다음 유튜브 링크 내용을 참고해서 답변해줘: ${state.youtubeUrl}\n\n")
+                        }
+                        append(state.combinedInstruction.ifBlank { "위 유튜브 링크 내용을 조사해서 알려줘" })
+                    }
+                    repo.research(prompt)
+                }
                 _uiState.value = _uiState.value.copy(
                     isAnalyzing = false,
                     resultText = res.text ?: "(응답 없음)",
@@ -190,8 +237,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     fun runPipeline() {
         val repo = repository ?: return
         val state = _uiState.value
-        if (state.pickedUris.isEmpty() && state.youtubeUrl.isBlank()) {
-            _uiState.value = state.copy(pipelineError = "사진/파일을 선택하거나 유튜브 링크를 입력해주세요")
+        // 사진/파일/유튜브 링크가 하나도 없어도, 지시사항 텍스트만으로 문서를 만들 수 있다
+        // (예: "이번 주 반도체 업황 조사해서 표로 정리해줘" — 서버가 웹서치로 내용을 채운다)
+        if (state.pickedUris.isEmpty() && state.youtubeUrl.isBlank() && state.instruction.isBlank()) {
+            _uiState.value = state.copy(pipelineError = "사진/파일을 선택하거나, 유튜브 링크 또는 지시사항 중 하나는 입력해주세요")
             return
         }
         // 받는 사람을 적었으면 이메일도 같이 보내고(both), 안 적었으면 결과 이미지 링크만 만든다(link)
@@ -421,5 +470,200 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 )
             }
         }
+    }
+
+    // ══════════════════════ 가계부(장부) ══════════════════════
+
+    fun openLedger() {
+        _uiState.value = _uiState.value.copy(showLedger = true, selectedLedgerName = null)
+        loadLedgerList()
+    }
+
+    fun closeLedger() {
+        _uiState.value = _uiState.value.copy(
+            showLedger = false, selectedLedgerName = null,
+            ledgerDraftEntries = emptyList(), ledgerPickedUris = emptyList()
+        )
+    }
+
+    fun loadLedgerList() {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingLedgerList = true, ledgerListError = null)
+            try {
+                val list = repo.listLedgers()
+                _uiState.value = _uiState.value.copy(isLoadingLedgerList = false, ledgerList = list)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoadingLedgerList = false,
+                    ledgerListError = "장부 목록을 불러오지 못했습니다: ${e.message ?: "알 수 없는 오류"}"
+                )
+            }
+        }
+    }
+
+    fun openLedgerDetail(name: String) {
+        _uiState.value = _uiState.value.copy(selectedLedgerName = name, ledgerQuery = "")
+        loadLedgerEntries(name)
+    }
+
+    fun closeLedgerDetail() {
+        _uiState.value = _uiState.value.copy(selectedLedgerName = null, ledgerGroups = emptyList())
+    }
+
+    fun setLedgerQuery(q: String) {
+        _uiState.value = _uiState.value.copy(ledgerQuery = q)
+    }
+
+    fun searchLedgerEntries() {
+        _uiState.value.selectedLedgerName?.let { loadLedgerEntries(it) }
+    }
+
+    fun loadLedgerEntries(name: String) {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingLedgerEntries = true, ledgerEntriesError = null)
+            try {
+                val res = repo.getLedgerEntries(name, _uiState.value.ledgerQuery)
+                _uiState.value = _uiState.value.copy(
+                    isLoadingLedgerEntries = false,
+                    ledgerGroups = res.groups,
+                    ledgerBalance = res.balance
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isLoadingLedgerEntries = false,
+                    ledgerEntriesError = "내역을 불러오지 못했습니다: ${e.message ?: "알 수 없는 오류"}"
+                )
+            }
+        }
+    }
+
+    fun deleteLedgerEntry(id: String) {
+        val repo = repository ?: return
+        val name = _uiState.value.selectedLedgerName ?: return
+        viewModelScope.launch {
+            try {
+                repo.deleteLedgerEntry(name, id)
+                loadLedgerEntries(name)
+                loadLedgerList()
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    ledgerEntriesError = "삭제 실패: ${e.message ?: "알 수 없는 오류"}"
+                )
+            }
+        }
+    }
+
+    // ── 새 항목 추가: 사진 선택 → 추출 → 확인/수정 → 저장 ──
+
+    fun addLedgerPickedUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        val merged = (_uiState.value.ledgerPickedUris + uris).distinct()
+        _uiState.value = _uiState.value.copy(ledgerPickedUris = merged, ledgerExtractError = null)
+    }
+
+    fun removeLedgerPickedUri(uri: Uri) {
+        _uiState.value = _uiState.value.copy(ledgerPickedUris = _uiState.value.ledgerPickedUris - uri)
+    }
+
+    fun clearLedgerPickedUris() {
+        _uiState.value = _uiState.value.copy(ledgerPickedUris = emptyList())
+    }
+
+    fun setLedgerInstruction(text: String) {
+        _uiState.value = _uiState.value.copy(ledgerInstruction = text)
+    }
+
+    fun setLedgerTargetName(text: String) {
+        _uiState.value = _uiState.value.copy(ledgerTargetName = text, ledgerSaveError = null)
+    }
+
+    fun extractLedgerEntries() {
+        val repo = repository ?: return
+        val state = _uiState.value
+        if (state.ledgerPickedUris.isEmpty()) {
+            _uiState.value = state.copy(ledgerExtractError = "먼저 영수증/서류 사진을 선택해주세요")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isExtractingLedger = true, ledgerExtractError = null, ledgerDraftEntries = emptyList()
+            )
+            try {
+                val entries = repo.extractLedgerEntries(state.ledgerPickedUris, state.ledgerInstruction)
+                _uiState.value = _uiState.value.copy(
+                    isExtractingLedger = false,
+                    ledgerDraftEntries = entries,
+                    ledgerExtractError = if (entries.isEmpty()) "사진에서 항목을 찾지 못했습니다" else null
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isExtractingLedger = false,
+                    ledgerExtractError = "추출 실패: ${e.message ?: "알 수 없는 오류"}"
+                )
+            }
+        }
+    }
+
+    fun updateLedgerDraftEntry(index: Int, updated: LedgerEntryDraft) {
+        val list = _uiState.value.ledgerDraftEntries.toMutableList()
+        if (index in list.indices) {
+            list[index] = updated
+            _uiState.value = _uiState.value.copy(ledgerDraftEntries = list)
+        }
+    }
+
+    fun removeLedgerDraftEntry(index: Int) {
+        val list = _uiState.value.ledgerDraftEntries.toMutableList()
+        if (index in list.indices) {
+            list.removeAt(index)
+            _uiState.value = _uiState.value.copy(ledgerDraftEntries = list)
+        }
+    }
+
+    fun addBlankLedgerDraftEntry() {
+        _uiState.value = _uiState.value.copy(
+            ledgerDraftEntries = _uiState.value.ledgerDraftEntries + LedgerEntryDraft()
+        )
+    }
+
+    fun confirmSaveLedgerEntries() {
+        val repo = repository ?: return
+        val state = _uiState.value
+        val name = state.ledgerTargetName.trim()
+        if (name.isEmpty()) {
+            _uiState.value = state.copy(ledgerSaveError = "저장할 장부 이름을 입력해주세요")
+            return
+        }
+        if (state.ledgerDraftEntries.isEmpty()) {
+            _uiState.value = state.copy(ledgerSaveError = "저장할 항목이 없습니다")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isSavingLedger = true, ledgerSaveError = null)
+            try {
+                val res = repo.saveLedgerEntries(name, state.ledgerDraftEntries)
+                _uiState.value = _uiState.value.copy(
+                    isSavingLedger = false,
+                    ledgerSaveMessage = "${res.saved.size}건을 \"$name\" 장부에 저장했습니다",
+                    ledgerDraftEntries = emptyList(),
+                    ledgerPickedUris = emptyList(),
+                    ledgerInstruction = "",
+                    ledgerTargetName = ""
+                )
+                loadLedgerList()
+                if (state.selectedLedgerName == name) loadLedgerEntries(name)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isSavingLedger = false,
+                    ledgerSaveError = "저장 실패: ${e.message ?: "알 수 없는 오류"}"
+                )
+            }
+        }
+    }
+
+    fun dismissLedgerSaveMessage() {
+        _uiState.value = _uiState.value.copy(ledgerSaveMessage = null)
     }
 }

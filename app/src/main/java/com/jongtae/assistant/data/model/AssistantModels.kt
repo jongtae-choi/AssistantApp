@@ -9,6 +9,9 @@ data class AnalyzeResponse(
     val citations: List<Citation> = emptyList()
 )
 
+// 사진 없이 순수 지시사항(+웹서치)만으로 답변받을 때 사용 — 응답 형태는 AnalyzeResponse와 동일
+data class ResearchRequest(val prompt: String)
+
 data class PipelineAckResponse(
     val ok: Boolean = false,
     val status: String? = null,
@@ -89,3 +92,67 @@ data class SaveOutputsRequest(val items: List<SaveOutputItem>)
 data class ContactsSyncRequest(val ownerId: String, val vcf: String)
 
 data class ApiErrorBody(val error: String? = null)
+
+// ══════════════════════ 가계부(장부) ══════════════════════
+// 영수증/모임통장내역 등 서류를 사진으로 찍어 보내면 Claude가 항목을 뽑아주고(추출),
+// 사용자가 확인한 뒤 이름 붙인 장부에 계속 누적해서 저장한다.
+
+// 서버가 사진에서 뽑아낸(아직 저장 전) 초안 항목. 저장 요청 시에도 같은 형태로 보낸다.
+data class LedgerEntryDraft(
+    val date: String? = null,       // "YYYY-MM-DD" (모르면 null)
+    val type: String = "expense",   // "expense"(지출) | "income"(수입)
+    val amount: Double = 0.0,
+    val description: String = "",
+    val category: String = "",
+    val counterparty: String = ""
+)
+
+data class LedgerExtractResponse(
+    val entries: List<LedgerEntryDraft> = emptyList()
+)
+
+// 서버에 실제로 저장된 뒤의 항목 (id/savedAt/memo 포함)
+data class LedgerEntry(
+    val id: String = "",
+    val date: String? = null,
+    val type: String = "expense",
+    val amount: Double = 0.0,
+    val description: String = "",
+    val category: String = "",
+    val counterparty: String = "",
+    val memo: String = "",
+    val savedAt: String? = null
+)
+
+data class LedgerSaveRequest(val ledger: String, val entries: List<LedgerEntryDraft>)
+data class LedgerSaveResponse(
+    val ok: Boolean = false,
+    val ledger: String? = null,
+    val saved: List<LedgerEntry> = emptyList(),
+    val count: Int = 0,
+    val balance: Double = 0.0
+)
+
+data class LedgerSummary(
+    val name: String,
+    val count: Int = 0,
+    val balance: Double = 0.0,
+    val lastUpdatedAt: String? = null
+)
+data class LedgerListResponse(val ledgers: List<LedgerSummary> = emptyList())
+
+data class LedgerGroup(
+    val month: String,        // "YYYY-MM"
+    val monthLabel: String,   // "2026년 8월"
+    val items: List<LedgerEntry> = emptyList(),
+    val subtotal: Double = 0.0
+)
+data class LedgerEntriesResponse(
+    val ledger: String? = null,
+    val balance: Double = 0.0,
+    val count: Int = 0,
+    val groups: List<LedgerGroup> = emptyList()
+)
+
+data class LedgerDeleteRequest(val ledger: String, val id: String)
+data class LedgerDeleteResponse(val ok: Boolean = false, val count: Int = 0, val balance: Double = 0.0)

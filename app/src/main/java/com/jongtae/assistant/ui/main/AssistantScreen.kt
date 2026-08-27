@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
@@ -88,7 +89,8 @@ fun AssistantApp(
     onPickImages: () -> Unit,
     onPickFiles: () -> Unit,
     onTakePhoto: () -> Unit,
-    onRequestContactsPermission: () -> Unit
+    onRequestContactsPermission: () -> Unit,
+    onVoiceInput: () -> Unit
 ) {
     val ui by viewModel.uiState.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
@@ -172,7 +174,8 @@ fun AssistantApp(
                     viewModel = viewModel,
                     onPickImages = onPickImages,
                     onPickFiles = onPickFiles,
-                    onTakePhoto = onTakePhoto
+                    onTakePhoto = onTakePhoto,
+                    onVoiceInput = onVoiceInput
                 )
             }
 
@@ -192,7 +195,8 @@ private fun MainContent(
     viewModel: AssistantViewModel,
     onPickImages: () -> Unit,
     onPickFiles: () -> Unit,
-    onTakePhoto: () -> Unit
+    onTakePhoto: () -> Unit,
+    onVoiceInput: () -> Unit
 ) {
     val ui by viewModel.uiState.collectAsState()
 
@@ -234,7 +238,7 @@ private fun MainContent(
                     .border(1.dp, DarkBorder, RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Text("사진/파일을 선택해주세요", color = TxtTertiary, fontSize = 12.sp)
+                Text("사진/파일 선택은 선택사항이에요 — 아래 지시사항만으로도 요청할 수 있어요", color = TxtTertiary, fontSize = 12.sp)
             }
         } else {
             Row(
@@ -281,8 +285,15 @@ private fun MainContent(
             placeholder = { Text("예: 이 영수증들 항목별로 정리해서 조사해줘") },
             modifier = Modifier.fillMaxWidth(),
             minLines = 2,
+            trailingIcon = {
+                IconButton(onClick = onVoiceInput) {
+                    Icon(Icons.Default.Mic, contentDescription = "음성으로 입력", tint = AccentAmber)
+                }
+            },
             colors = darkFieldColors()
         )
+        Spacer(Modifier.height(4.dp))
+        Text("마이크 버튼을 누르고 말하면 지시사항으로 옮겨 적어드려요. 틀린 부분만 직접 고치면 돼요.", fontSize = 10.sp, color = TxtTertiary)
 
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.Top) {
