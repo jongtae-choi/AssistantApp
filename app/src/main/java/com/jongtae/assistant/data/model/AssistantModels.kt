@@ -9,8 +9,10 @@ data class AnalyzeResponse(
     val citations: List<Citation> = emptyList()
 )
 
-// 사진 없이 순수 지시사항(+웹서치)만으로 답변받을 때 사용 — 응답 형태는 AnalyzeResponse와 동일
-data class ResearchRequest(val prompt: String)
+// 사진 없이 순수 지시사항(+웹서치, +유튜브 자막)만으로 답변받을 때 사용 — 응답 형태는 AnalyzeResponse와 동일
+// youtubeUrl을 함께 보내면 서버가 그 영상의 자막을 먼저 가져와서 프롬프트에 포함시켜준다
+// (Claude는 유튜브 링크에 직접 접속해서 보는 기능이 없기 때문 — 자막 텍스트로 대신 전달해야 함)
+data class ResearchRequest(val prompt: String, val youtubeUrl: String? = null)
 
 data class PipelineAckResponse(
     val ok: Boolean = false,

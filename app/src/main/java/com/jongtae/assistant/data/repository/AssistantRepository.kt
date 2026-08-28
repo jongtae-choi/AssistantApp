@@ -79,8 +79,9 @@ class AssistantRepository(
         return api.analyzeImage(parts, text(instruction))
     }
 
-    /** 사진 없이 순수 지시사항(+웹서치)만으로 답변을 받는다. */
-    suspend fun research(prompt: String): AnalyzeResponse = api.research(ResearchRequest(prompt))
+    /** 사진 없이 순수 지시사항(+웹서치, +유튜브 자막)만으로 답변을 받는다. */
+    suspend fun research(prompt: String, youtubeUrl: String? = null): AnalyzeResponse =
+        api.research(ResearchRequest(prompt, youtubeUrl))
 
     suspend fun pipelinePhotoToGmail(
         uri: Uri,

@@ -216,14 +216,14 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 val res = if (state.pickedUris.isNotEmpty()) {
                     repo.analyzeImage(state.pickedUris, state.combinedInstruction)
                 } else {
-                    // 사진 없이 지시사항(+ 있다면 유튜브 링크 언급)만으로 웹서치 기반 답변을 받는다
-                    val prompt = buildString {
-                        if (state.youtubeUrl.isNotBlank()) {
-                            append("다음 유튜브 링크 내용을 참고해서 답변해줘: ${state.youtubeUrl}\n\n")
-                        }
-                        append(state.combinedInstruction.ifBlank { "위 유튜브 링크 내용을 조사해서 알려줘" })
-                    }
-                    repo.research(prompt)
+                    // 사진 없이 지시사항(+ 있다면 유튜브 링크)만으로 답변을 받는다.
+                    // 유튜브 링크는 프롬프트 텍스트에 그냥 섞어 보내면 Claude가 "링크에 직접
+                    // 접속할 수 없다"고 답하고 끝나버리므로, 반드시 별도 필드로 보내야 한다 —
+                    // 서버가 그 링크의 자막을 먼저 가져와서 프롬프트에 텍스트로 붙여준다.
+                    repo.research(
+                        prompt = state.combinedInstruction.ifBlank { "위 영상 내용을 조사해서 알려줘" },
+                        youtubeUrl = state.youtubeUrl.ifBlank { null }
+                    )
                 }
                 _uiState.value = _uiState.value.copy(
                     isAnalyzing = false,
