@@ -26,13 +26,15 @@ object ApiProvider {
         // 사진 여러 장 + Claude 웹서치 + 문서 생성까지 이어지는 파이프라인은 시간이 걸릴 수 있어
         // 읽기 타임아웃을 넉넉히 잡는다. (photo-to-gmail은 서버가 즉시 202류 응답을 먼저 보내므로
         // 실제로는 오래 걸리지 않지만, analyze-image/photo-to-document는 Claude 응답을 그대로
-        // 기다려야 하고, 사진이 여러 장이면 더 오래 걸릴 수 있어 넉넉히 120초로 설정)
+        // 기다려야 하고, 사진이 여러 장이면 더 오래 걸릴 수 있음. 리서치 기능이 GPT/Gemini/Groq/
+        // OpenRouter까지 병렬로 물어보고 Claude가 교차검증하는 방식으로 확장되면서(가장 느린
+        // AI 하나 + Claude 종합 시간) 응답이 더 오래 걸릴 수 있어 240초로 여유를 더 뒀다)
         val client = OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
             .addInterceptor(logging)
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(120, TimeUnit.SECONDS)
+            .readTimeout(240, TimeUnit.SECONDS)
+            .writeTimeout(240, TimeUnit.SECONDS)
             .build()
 
         return Retrofit.Builder()
