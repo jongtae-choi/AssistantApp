@@ -17,6 +17,7 @@ import com.jongtae.assistant.data.model.LedgerSaveRequest
 import com.jongtae.assistant.data.model.LedgerSaveResponse
 import com.jongtae.assistant.data.model.PhotoDocumentResponse
 import com.jongtae.assistant.data.model.PipelineAckResponse
+import com.jongtae.assistant.data.model.RefineWithClaudeRequest
 import com.jongtae.assistant.data.model.ResearchRequest
 import com.jongtae.assistant.data.model.SaveOutputsRequest
 import com.jongtae.assistant.data.model.SaveOutputsResponse
@@ -75,6 +76,11 @@ interface AssistantApiService {
         @Part("youtubeUrl") youtubeUrl: RequestBody?,
         @Part("matchContacts") matchContacts: RequestBody?
     ): PhotoDocumentResponse
+
+    // 무료 AI(Gemini 등)가 만든 문서 초안(docStructure)을 Claude로 검토/보완한다.
+    // 자동으로는 호출되지 않고, 사용자가 "클로드로 보완" 버튼을 눌렀을 때만 호출된다.
+    @POST("assistant/api/pipeline/refine-with-claude")
+    suspend fun refineWithClaude(@Body body: RefineWithClaudeRequest): PhotoDocumentResponse
 
     // 결과 이미지 내용을 보고 제목(파일명)을 자동 제안
     @POST("assistant/api/outputs/suggest-titles")

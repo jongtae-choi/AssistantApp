@@ -468,6 +468,31 @@ private fun MainContent(
             Text(ui.pipelineMessage ?: "", color = com.jongtae.assistant.ui.theme.AccentEmerald, fontSize = 12.sp)
         }
 
+        // ── 초안이 Gemini(무료 AI)로 만들어졌으면, 필요할 때만 Claude로 보완할 수 있게 버튼 제공 ──
+        if (ui.pipelineDocStructure != null && ui.pipelineUsedProvider != "claude") {
+            Spacer(Modifier.height(14.dp))
+            OutlinedTextField(
+                value = ui.refineInstruction,
+                onValueChange = { viewModel.setRefineInstruction(it) },
+                label = { Text("클로드에게 보완 요청 (선택)") },
+                placeholder = { Text("예: 3번 항목 금액을 다시 확인해줘") },
+                modifier = Modifier.fillMaxWidth(),
+                colors = darkFieldColors()
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { viewModel.refineWithClaude() },
+                enabled = !ui.isRefiningWithClaude,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (ui.isRefiningWithClaude) "클로드가 보완 중..." else "클로드로 보완")
+            }
+            if (ui.refineError != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(ui.refineError ?: "", color = AccentRose, fontSize = 12.sp)
+            }
+        }
+
         // ── 생성된 이미지 결과 ──
         if (ui.resultImageFilenames.isNotEmpty()) {
             Spacer(Modifier.height(28.dp))

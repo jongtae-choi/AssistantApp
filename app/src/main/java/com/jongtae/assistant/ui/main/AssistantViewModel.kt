@@ -4,8 +4,10 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.Gson
 import com.jongtae.assistant.data.contacts.ContactsSyncManager
 import com.jongtae.assistant.data.contacts.ContactsSyncWorker
+import com.jongtae.assistant.data.model.ApiErrorBody
 import com.jongtae.assistant.data.model.ArchiveGroup
 import com.jongtae.assistant.data.model.CalendarEventDraft
 import com.jongtae.assistant.data.model.Citation
@@ -21,6 +23,33 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
+
+/**
+ * 서버가 HTTP 에러(4xx/5xx)와 함께 JSON으로 보낸 실제 에러 메시지를 최대한 꺼내서 보여준다.
+ * Retrofit의 HttpException.message는 "HTTP 400" 처럼 상태코드만 담고 있어서, 서버가
+ * { "error": "..." } 형태로 보낸 진짜 이유(예: "유튜브 자막을 가져오지 못했습니다: ...")를
+ * 대신 파싱해서 보여준다. 파싱에 실패하면 원문/기본 메시지로 조용히 대체한다.
+ */
+private fun Throwable.friendlyMessage(default: String = "알 수 없는 오류"): String {
+    if (this is HttpException) {
+        try {
+            val body = response()?.errorBody()?.string()
+            if (!body.isNullOrBlank()) {
+                try {
+                    val parsed = Gson().fromJson(body, ApiErrorBody::class.java)
+                    if (!parsed?.error.isNullOrBlank()) return parsed!!.error!!
+                } catch (_: Exception) {
+                    // JSON이 아니면 아래에서 원문을 그대로 보여준다
+                }
+                if (body.length < 300) return body
+            }
+        } catch (_: Exception) {
+            // 응답 본문을 못 읽으면 그냥 아래 기본 메시지로 넘어간다
+        }
+    }
+    return message ?: default
+}
 
 data class AssistantUiState(
     val isConfigured: Boolean = false,
@@ -49,6 +78,15 @@ data class AssistantUiState(
     val pipelineDocTitle: String? = null,
     val pipelineMessage: String? = null,
     val pipelineError: String? = null,
+    // 방금 만들어진 초안을 어느 AI가 만들었는지("gemini"|"claude"), 그리고 "클로드로 보완"
+    // 요청 시 그대로 되돌려 보낼 원본 문서 구조 — 사진을 다시 첨부할 필요 없이 이 JSON만
+    // 다시 보내면 되므로 서버 응답을 그대로 들고 있는다.
+    val pipelineUsedProvider: String? = null,
+    val pipelineDocStructure: com.google.gson.JsonElement? = null,
+    val pipelineDocTypeUsed: String? = null,
+    val refineInstruction: String = "",
+    val isRefiningWithClaude: Boolean = false,
+    val refineError: String? = null,
 
     // ── 생성된 이미지 결과 ──
     val resultImageFilenames: List<String> = emptyList(),
@@ -233,7 +271,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isAnalyzing = false,
-                    analyzeError = "분석 실패: ${e.message ?: "알 수 없는 오류"}"
+                    analyzeError = "분석 실패: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -261,7 +299,9 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(
                 isRunningPipeline = true, pipelineError = null, pipelineMessage = null,
-                resultImageFilenames = emptyList(), selectedResultImages = emptySet()
+                resultImageFilenames = emptyList(), selectedResultImages = emptySet(),
+                pipelineUsedProvider = null, pipelineDocStructure = null, pipelineDocTypeUsed = null,
+                refineError = null
             )
             try {
                 val res = repo.pipelinePhotoToDocument(
@@ -276,6 +316,8 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 )
                 val message = buildString {
                     append("문서 생성 완료")
+                    if (res.usedProvider == "gemini") append(" (Gemini 초안)")
+                    else if (res.usedProvider == "claude") append(" (Claude)")
                     if (res.gmailMessageId != null) append(" · 메일 발송됨")
                     if (res.emailError != null) append(" (메일 발송 실패: ${res.emailError})")
                 }
@@ -283,12 +325,65 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                     isRunningPipeline = false,
                     pipelineDocTitle = res.title,
                     pipelineMessage = message,
-                    resultImageFilenames = res.imageFilenames
+                    resultImageFilenames = res.imageFilenames,
+                    pipelineUsedProvider = res.usedProvider,
+                    pipelineDocStructure = res.docStructure,
+                    pipelineDocTypeUsed = res.docType
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isRunningPipeline = false,
-                    pipelineError = "요청 실패: ${e.message ?: "알 수 없는 오류"}"
+                    pipelineError = "요청 실패: ${e.friendlyMessage()}"
+                )
+            }
+        }
+    }
+
+    fun setRefineInstruction(text: String) {
+        _uiState.value = _uiState.value.copy(refineInstruction = text)
+    }
+
+    /**
+     * 방금 만들어진 초안(Gemini 등 무료 AI가 만든 것)을 Claude에게 검토/보완시킨다.
+     * 사진을 다시 첨부할 필요 없이, 이전 응답의 docStructure/docType을 그대로 서버에
+     * 되돌려 보낸다. 자동으로는 절대 호출되지 않고, 사용자가 버튼을 눌렀을 때만 실행된다.
+     */
+    fun refineWithClaude() {
+        val repo = repository ?: return
+        val state = _uiState.value
+        val draft = state.pipelineDocStructure ?: return
+        val docType = state.pipelineDocTypeUsed ?: state.docType
+        val outputMode = if (state.to.isBlank()) "link" else "both"
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isRefiningWithClaude = true, refineError = null)
+            try {
+                val res = repo.refineWithClaude(
+                    docStructure = draft,
+                    docType = docType,
+                    outputMode = outputMode,
+                    to = state.to,
+                    subject = state.subject,
+                    instruction = state.refineInstruction
+                )
+                val message = buildString {
+                    append("Claude 보완 완료")
+                    if (res.gmailMessageId != null) append(" · 메일 발송됨")
+                    if (res.emailError != null) append(" (메일 발송 실패: ${res.emailError})")
+                }
+                _uiState.value = _uiState.value.copy(
+                    isRefiningWithClaude = false,
+                    pipelineDocTitle = res.title,
+                    pipelineMessage = message,
+                    resultImageFilenames = res.imageFilenames,
+                    pipelineUsedProvider = res.usedProvider,
+                    pipelineDocStructure = res.docStructure,
+                    pipelineDocTypeUsed = res.docType
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isRefiningWithClaude = false,
+                    refineError = "보완 실패: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -369,7 +464,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isSavingOutputs = false,
-                    saveError = "저장 실패: ${e.message ?: "알 수 없는 오류"}"
+                    saveError = "저장 실패: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -429,7 +524,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoadingArchive = false,
-                    archiveError = "보관함을 불러오지 못했습니다: ${e.message ?: "알 수 없는 오류"}"
+                    archiveError = "보관함을 불러오지 못했습니다: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -478,7 +573,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             }.onFailure { e ->
                 _uiState.value = _uiState.value.copy(
                     isSyncingContacts = false,
-                    contactsSyncError = e.message ?: "동기화에 실패했습니다"
+                    contactsSyncError = e.friendlyMessage("동기화에 실패했습니다")
                 )
             }
         }
@@ -508,7 +603,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoadingLedgerList = false,
-                    ledgerListError = "장부 목록을 불러오지 못했습니다: ${e.message ?: "알 수 없는 오류"}"
+                    ledgerListError = "장부 목록을 불러오지 못했습니다: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -545,7 +640,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoadingLedgerEntries = false,
-                    ledgerEntriesError = "내역을 불러오지 못했습니다: ${e.message ?: "알 수 없는 오류"}"
+                    ledgerEntriesError = "내역을 불러오지 못했습니다: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -561,7 +656,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 loadLedgerList()
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
-                    ledgerEntriesError = "삭제 실패: ${e.message ?: "알 수 없는 오류"}"
+                    ledgerEntriesError = "삭제 실패: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -612,7 +707,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isExtractingLedger = false,
-                    ledgerExtractError = "추출 실패: ${e.message ?: "알 수 없는 오류"}"
+                    ledgerExtractError = "추출 실패: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -669,7 +764,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isSavingLedger = false,
-                    ledgerSaveError = "저장 실패: ${e.message ?: "알 수 없는 오류"}"
+                    ledgerSaveError = "저장 실패: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -736,7 +831,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isExtractingEvents = false,
-                    calendarExtractError = "추출 실패: ${e.message ?: "알 수 없는 오류"}"
+                    calendarExtractError = "추출 실패: ${e.friendlyMessage()}"
                 )
             }
         }
@@ -794,7 +889,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isRegisteringEvents = false,
-                    calendarRegisterError = "등록 실패: ${e.message ?: "알 수 없는 오류"}"
+                    calendarRegisterError = "등록 실패: ${e.friendlyMessage()}"
                 )
             }
         }

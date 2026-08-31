@@ -18,6 +18,7 @@ import com.jongtae.assistant.data.model.LedgerSaveResponse
 import com.jongtae.assistant.data.model.LedgerSummary
 import com.jongtae.assistant.data.model.PhotoDocumentResponse
 import com.jongtae.assistant.data.model.PipelineAckResponse
+import com.jongtae.assistant.data.model.RefineWithClaudeRequest
 import com.jongtae.assistant.data.model.RegisterEventsRequest
 import com.jongtae.assistant.data.model.RegisterEventsResponse
 import com.jongtae.assistant.data.model.ResearchRequest
@@ -127,6 +128,28 @@ class AssistantRepository(
             matchContacts = if (matchContacts) text("true") else null
         )
     }
+
+    /**
+     * 무료 AI가 만든 문서 초안(docStructure)을 Claude로 검토/보완해서 다시 만든다.
+     * pipelinePhotoToDocument()의 응답에서 받은 docStructure/docType을 그대로 넘기면 된다.
+     */
+    suspend fun refineWithClaude(
+        docStructure: com.google.gson.JsonElement,
+        docType: String,
+        outputMode: String,
+        to: String,
+        subject: String,
+        instruction: String
+    ): PhotoDocumentResponse = api.refineWithClaude(
+        RefineWithClaudeRequest(
+            docStructure = docStructure,
+            docType = docType,
+            outputMode = outputMode,
+            to = to.ifBlank { null },
+            subject = subject.ifBlank { null },
+            instruction = instruction.ifBlank { null }
+        )
+    )
 
     /** 결과 이미지들의 내용을 보고 파일명으로 쓸 제목을 자동 제안받는다. */
     suspend fun suggestTitles(filenames: List<String>): Map<String, String> {

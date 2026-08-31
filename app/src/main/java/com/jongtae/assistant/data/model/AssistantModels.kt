@@ -1,5 +1,7 @@
 package com.jongtae.assistant.data.model
 
+import com.google.gson.JsonElement
+
 // server.js(개인비서) 응답 구조를 그대로 반영
 
 data class Citation(val url: String, val title: String? = null)
@@ -41,12 +43,28 @@ data class HealthResponse(
 )
 
 // POST /api/pipeline/photo-to-document 응답
+// (POST /api/pipeline/refine-with-claude 응답도 동일한 형태를 그대로 씀)
 data class PhotoDocumentResponse(
     val ok: Boolean = false,
     val title: String? = null,
     val imageFilenames: List<String> = emptyList(),
     val gmailMessageId: String? = null,
-    val emailError: String? = null
+    val emailError: String? = null,
+    val usedProvider: String? = null, // "gemini" | "claude" — 이 초안을 어느 AI가 만들었는지
+    val docStructure: JsonElement? = null, // 그대로 보관했다가 "클로드로 보완" 요청 시 되돌려 보낸다
+    val docType: String? = null // "excel" | "pptx" — 마찬가지로 보완 요청 시 그대로 되돌려 보낸다
+)
+
+// POST /api/pipeline/refine-with-claude 요청 — photo-to-document 응답의 docStructure/docType을
+// 그대로 담아 보내면, Claude가 검토/보완한 뒤 문서를 다시 만들어(+필요시 메일 발송) 돌려준다.
+data class RefineWithClaudeRequest(
+    val docStructure: JsonElement,
+    val docType: String,
+    val outputMode: String,
+    val to: String? = null,
+    val subject: String? = null,
+    val filename: String? = null,
+    val instruction: String? = null
 )
 
 // POST /api/outputs/suggest-titles 응답 — { "파일명.png": "제안된 제목" } 형태
