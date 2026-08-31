@@ -1,7 +1,15 @@
 package com.jongtae.assistant.ui.main
 
+import android.Manifest
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
@@ -14,16 +22,25 @@ import com.jongtae.assistant.data.model.Citation
 import com.jongtae.assistant.data.model.LedgerEntryDraft
 import com.jongtae.assistant.data.model.LedgerGroup
 import com.jongtae.assistant.data.model.LedgerSummary
+import com.jongtae.assistant.data.model.PipelineStatusResponse
 import com.jongtae.assistant.data.network.ApiProvider
 import com.jongtae.assistant.data.network.AssistantApiService
 import com.jongtae.assistant.data.repository.AssistantRepository
 import com.jongtae.assistant.data.settings.SettingsStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
+
+// 문서생성/보완 작업 완료를 폰이 폴링으로 확인하는 주기 — 너무 짧으면 서버에 부담,
+// 너무 길면 완료를 늦게 알게 됨. 4초 간격으로 최대 90번(=6분)까지 시도한다.
+private const val PIPELINE_POLL_INTERVAL_MS = 4000L
+private const val PIPELINE_POLL_MAX_ATTEMPTS = 90
+private const val PIPELINE_NOTIFICATION_CHANNEL_ID = "pipeline_complete"
+private const val PIPELINE_NOTIFICATION_ID = 1001
 
 /**
  * 서버가 HTTP 에러(4xx/5xx)와 함께 JSON으로 보낸 실제 에러 메시지를 최대한 꺼내서 보여준다.
@@ -284,6 +301,12 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     fun setDocType(type: String) { _uiState.value = _uiState.value.copy(docType = type) }
     fun setMatchContacts(checked: Boolean) { _uiState.value = _uiState.value.copy(matchContacts = checked) }
 
+    /**
+     * 문서 생성은 시간이 오래 걸릴 수 있어(수십 초~수 분) 서버가 더 이상 결과를 동기로
+     * 주지 않는다 — 요청을 접수하면 즉시 jobId만 오고, 실제 결과는 백그라운드에서 처리된
+     * 뒤 GET /pipeline/status/{jobId} 를 몇 초마다 폴링해서 받아온다(pollPipelineJob).
+     * 그래야 타임아웃(폰 OkHttp/리버스프록시) 걱정 없이 오래 걸리는 작업도 끝까지 기다릴 수 있다.
+     */
     fun runPipeline() {
         val repo = repository ?: return
         val state = _uiState.value
@@ -304,7 +327,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 refineError = null
             )
             try {
-                val res = repo.pipelinePhotoToDocument(
+                val ack = repo.pipelinePhotoToDocument(
                     uris = state.pickedUris,
                     instruction = state.combinedInstruction,
                     docType = state.docType,
@@ -314,21 +337,17 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                     youtubeUrl = state.youtubeUrl,
                     matchContacts = state.matchContacts
                 )
-                val message = buildString {
-                    append("문서 생성 완료")
-                    if (res.usedProvider == "gemini") append(" (Gemini 초안)")
-                    else if (res.usedProvider == "claude") append(" (Claude)")
-                    if (res.gmailMessageId != null) append(" · 메일 발송됨")
-                    if (res.emailError != null) append(" (메일 발송 실패: ${res.emailError})")
+                val jobId = ack.jobId
+                if (jobId.isNullOrBlank()) {
+                    _uiState.value = _uiState.value.copy(isRunningPipeline = false, pipelineError = "작업 접수에 실패했습니다 (jobId 없음)")
+                    return@launch
                 }
-                _uiState.value = _uiState.value.copy(
-                    isRunningPipeline = false,
-                    pipelineDocTitle = res.title,
-                    pipelineMessage = message,
-                    resultImageFilenames = res.imageFilenames,
-                    pipelineUsedProvider = res.usedProvider,
-                    pipelineDocStructure = res.docStructure,
-                    pipelineDocTypeUsed = res.docType
+                pollPipelineJob(
+                    jobId = jobId,
+                    successPrefix = "문서 생성 완료",
+                    includeProviderSuffix = true,
+                    setRunning = { running -> _uiState.value = _uiState.value.copy(isRunningPipeline = running) },
+                    setError = { error -> _uiState.value = _uiState.value.copy(pipelineError = error) }
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -347,6 +366,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
      * 방금 만들어진 초안(Gemini 등 무료 AI가 만든 것)을 Claude에게 검토/보완시킨다.
      * 사진을 다시 첨부할 필요 없이, 이전 응답의 docStructure/docType을 그대로 서버에
      * 되돌려 보낸다. 자동으로는 절대 호출되지 않고, 사용자가 버튼을 눌렀을 때만 실행된다.
+     * runPipeline()과 마찬가지로 즉시 jobId만 받고 폴링으로 결과를 기다린다.
      */
     fun refineWithClaude() {
         val repo = repository ?: return
@@ -358,7 +378,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isRefiningWithClaude = true, refineError = null)
             try {
-                val res = repo.refineWithClaude(
+                val ack = repo.refineWithClaude(
                     docStructure = draft,
                     docType = docType,
                     outputMode = outputMode,
@@ -366,19 +386,17 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                     subject = state.subject,
                     instruction = state.refineInstruction
                 )
-                val message = buildString {
-                    append("Claude 보완 완료")
-                    if (res.gmailMessageId != null) append(" · 메일 발송됨")
-                    if (res.emailError != null) append(" (메일 발송 실패: ${res.emailError})")
+                val jobId = ack.jobId
+                if (jobId.isNullOrBlank()) {
+                    _uiState.value = _uiState.value.copy(isRefiningWithClaude = false, refineError = "작업 접수에 실패했습니다 (jobId 없음)")
+                    return@launch
                 }
-                _uiState.value = _uiState.value.copy(
-                    isRefiningWithClaude = false,
-                    pipelineDocTitle = res.title,
-                    pipelineMessage = message,
-                    resultImageFilenames = res.imageFilenames,
-                    pipelineUsedProvider = res.usedProvider,
-                    pipelineDocStructure = res.docStructure,
-                    pipelineDocTypeUsed = res.docType
+                pollPipelineJob(
+                    jobId = jobId,
+                    successPrefix = "Claude 보완 완료",
+                    includeProviderSuffix = false, // 보완 결과는 항상 Claude라 굳이 다시 표기 안 함
+                    setRunning = { running -> _uiState.value = _uiState.value.copy(isRefiningWithClaude = running) },
+                    setError = { error -> _uiState.value = _uiState.value.copy(refineError = error) }
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -387,6 +405,113 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 )
             }
         }
+    }
+
+    /**
+     * runPipeline()/refineWithClaude() 공용 폴링 루프. jobId를 몇 초 간격으로 조회해서
+     * "done"이면 결과를 화면 상태에 반영하고 알림을 띄우고, "error"/"not_found"면 에러를
+     * 반영한다. "processing"이면 계속 기다린다. 네트워크가 잠깐 끊겨도(예: 와이파이↔LTE
+     * 전환) 마지막 시도 전까지는 폴링을 계속한다.
+     */
+    private suspend fun pollPipelineJob(
+        jobId: String,
+        successPrefix: String,
+        includeProviderSuffix: Boolean,
+        setRunning: (Boolean) -> Unit,
+        setError: (String?) -> Unit
+    ) {
+        val repo = repository ?: return
+        var attempt = 0
+        while (attempt < PIPELINE_POLL_MAX_ATTEMPTS) {
+            delay(PIPELINE_POLL_INTERVAL_MS)
+            attempt++
+
+            val status: PipelineStatusResponse
+            try {
+                status = repo.getPipelineStatus(jobId)
+            } catch (e: Exception) {
+                if (attempt >= PIPELINE_POLL_MAX_ATTEMPTS) {
+                    setRunning(false)
+                    setError("상태 확인 실패: ${e.friendlyMessage()}")
+                }
+                continue
+            }
+
+            when (status.status) {
+                "done" -> {
+                    val message = buildString {
+                        append(successPrefix)
+                        if (includeProviderSuffix) {
+                            if (status.usedProvider == "gemini") append(" (Gemini 초안)")
+                            else if (status.usedProvider == "claude") append(" (Claude)")
+                        }
+                        if (status.gmailMessageId != null) append(" · 메일 발송됨")
+                        if (status.emailError != null) append(" (메일 발송 실패: ${status.emailError})")
+                    }
+                    setRunning(false)
+                    _uiState.value = _uiState.value.copy(
+                        pipelineDocTitle = status.title,
+                        pipelineMessage = message,
+                        resultImageFilenames = status.imageFilenames,
+                        pipelineUsedProvider = status.usedProvider,
+                        pipelineDocStructure = status.docStructure,
+                        pipelineDocTypeUsed = status.docType
+                    )
+                    notifyPipelineComplete(message)
+                    return
+                }
+                "error" -> {
+                    val errorMessage = "실패: ${status.error ?: "알 수 없는 오류"}"
+                    setRunning(false)
+                    setError(errorMessage)
+                    notifyPipelineComplete("개인비서: $errorMessage")
+                    return
+                }
+                "not_found" -> {
+                    setRunning(false)
+                    setError("작업 정보를 찾을 수 없습니다 (서버가 재시작됐을 수 있습니다)")
+                    return
+                }
+                else -> {
+                    // "processing" — 계속 기다린다
+                }
+            }
+        }
+        // 최대 시도 횟수(6분)를 넘겼는데도 처리중이면 폴링을 멈추고 사용자에게 알린다.
+        // (서버는 계속 작업 중일 수 있으니, 나중에 앱을 다시 열어 같은 jobId로 확인하는
+        // 기능은 지금은 없다 — 필요하면 결과는 메일로도 온다)
+        setRunning(false)
+        setError("처리 시간이 너무 오래 걸립니다 (6분 초과). 이메일을 지정했다면 완료 시 메일로 결과가 도착할 수 있습니다.")
+    }
+
+    /** 문서 생성/보완이 끝나면 화면과 별개로 알림도 띄운다 — 앱이 백그라운드에 있어도 완료를 알 수 있게. */
+    private fun notifyPipelineComplete(message: String) {
+        val context = getApplication<Application>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return // 알림 권한이 없으면 조용히 건너뛴다 (화면에는 이미 결과가 반영됨)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            if (manager.getNotificationChannel(PIPELINE_NOTIFICATION_CHANNEL_ID) == null) {
+                manager.createNotificationChannel(
+                    NotificationChannel(
+                        PIPELINE_NOTIFICATION_CHANNEL_ID,
+                        "문서 생성 완료 알림",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    )
+                )
+            }
+        }
+        val notification = NotificationCompat.Builder(context, PIPELINE_NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle("개인비서")
+            .setContentText(message)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        NotificationManagerCompat.from(context).notify(PIPELINE_NOTIFICATION_ID, notification)
     }
 
     /** outputs 필드명(파일명)만으로 실제 접근 가능한 전체 URL을 조립한다 */

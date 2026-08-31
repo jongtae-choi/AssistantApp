@@ -16,8 +16,9 @@ import com.jongtae.assistant.data.model.LedgerEntryDraft
 import com.jongtae.assistant.data.model.LedgerSaveRequest
 import com.jongtae.assistant.data.model.LedgerSaveResponse
 import com.jongtae.assistant.data.model.LedgerSummary
-import com.jongtae.assistant.data.model.PhotoDocumentResponse
 import com.jongtae.assistant.data.model.PipelineAckResponse
+import com.jongtae.assistant.data.model.PipelineJobAckResponse
+import com.jongtae.assistant.data.model.PipelineStatusResponse
 import com.jongtae.assistant.data.model.RefineWithClaudeRequest
 import com.jongtae.assistant.data.model.RegisterEventsRequest
 import com.jongtae.assistant.data.model.RegisterEventsResponse
@@ -103,6 +104,8 @@ class AssistantRepository(
 
     /**
      * 사진/파일 여러 장(+ 유튜브 링크, 주소록 매칭 등)을 문서로 정리한다.
+     * 시간이 오래 걸릴 수 있어(수십 초~수 분) 서버가 즉시 jobId만 돌려준다 — 결과는
+     * getPipelineStatus(jobId)를 폴링해서 받아야 한다.
      * outputMode: "link" | "email" | "both" — link/both일 때 imageFilenames로 결과 이미지가 온다.
      * matchContacts는 켜져 있을 때만 파트를 실어 보낸다(꺼져 있으면 아예 필드 자체를 안 보냄).
      */
@@ -115,7 +118,7 @@ class AssistantRepository(
         subject: String,
         youtubeUrl: String,
         matchContacts: Boolean
-    ): PhotoDocumentResponse {
+    ): PipelineJobAckResponse {
         val parts = urisToParts(uris)
         return api.pipelinePhotoToDocument(
             photos = parts,
@@ -132,6 +135,7 @@ class AssistantRepository(
     /**
      * 무료 AI가 만든 문서 초안(docStructure)을 Claude로 검토/보완해서 다시 만든다.
      * pipelinePhotoToDocument()의 응답에서 받은 docStructure/docType을 그대로 넘기면 된다.
+     * 이것도 마찬가지로 즉시 jobId만 돌아온다 — getPipelineStatus(jobId)로 폴링해야 한다.
      */
     suspend fun refineWithClaude(
         docStructure: com.google.gson.JsonElement,
@@ -140,7 +144,7 @@ class AssistantRepository(
         to: String,
         subject: String,
         instruction: String
-    ): PhotoDocumentResponse = api.refineWithClaude(
+    ): PipelineJobAckResponse = api.refineWithClaude(
         RefineWithClaudeRequest(
             docStructure = docStructure,
             docType = docType,
@@ -150,6 +154,9 @@ class AssistantRepository(
             instruction = instruction.ifBlank { null }
         )
     )
+
+    /** photo-to-document / refine-with-claude 가 돌려준 jobId로 진행 상황을 확인(폴링)한다. */
+    suspend fun getPipelineStatus(jobId: String): PipelineStatusResponse = api.getPipelineStatus(jobId)
 
     /** 결과 이미지들의 내용을 보고 파일명으로 쓸 제목을 자동 제안받는다. */
     suspend fun suggestTitles(filenames: List<String>): Map<String, String> {

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -83,6 +84,12 @@ class MainActivity : ComponentActivity() {
             // 거부되면 아무 것도 하지 않는다 (버튼을 다시 누르면 재요청됨)
         }
 
+    // 알림 권한 요청 (Android 13+) — 문서 생성/보완이 비동기(폴링)로 바뀌면서, 앱이
+    // 백그라운드에 있어도 완료를 알 수 있도록 알림을 띄운다. 거부해도 앱 사용에는
+    // 지장 없음(화면에서 결과를 직접 확인 가능) — 그래서 결과만 조용히 무시한다.
+    private val requestNotificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* 결과 무시 */ }
+
     // 음성으로 지시사항 입력 — 안드로이드 기본 음성 인식(구글) 화면을 띄워서 인식된
     // 텍스트만 돌려받는다. 녹음 자체는 그 화면(구글 앱)이 처리하므로 별도의 RECORD_AUDIO
     // 권한 요청이 필요 없다.
@@ -118,6 +125,7 @@ class MainActivity : ComponentActivity() {
 
         viewModel.setHasContactsPermission(hasContactsPermission())
         handleIncomingIntent(intent)
+        requestNotificationPermissionIfNeeded()
 
         setContent {
             AssistantAppTheme {
@@ -179,6 +187,14 @@ class MainActivity : ComponentActivity() {
     private fun hasContactsPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) ==
             PackageManager.PERMISSION_GRANTED
+
+    /** Android 13(API 33) 미만은 알림 권한이 필요 없으므로(매니페스트 선언만으로 동작) 그 이하에서는 건너뛴다. */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!granted) requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
 
     /** 다른 앱(갤러리, 카메라, 파일관리자 등)에서 "공유하기"로 사진/PDF를 보낸 경우 자동으로 선택 목록에 반영 */
     private fun handleIncomingIntent(intent: Intent?) {

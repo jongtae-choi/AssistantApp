@@ -42,10 +42,22 @@ data class HealthResponse(
     val time: String? = null
 )
 
-// POST /api/pipeline/photo-to-document 응답
-// (POST /api/pipeline/refine-with-claude 응답도 동일한 형태를 그대로 씀)
-data class PhotoDocumentResponse(
+// POST /api/pipeline/photo-to-document, POST /api/pipeline/refine-with-claude 의 "즉시" 응답.
+// 두 API 모두 시간이 오래 걸릴 수 있어(수십 초~수 분) 더 이상 결과를 바로 주지 않고,
+// 요청을 접수했다는 jobId만 즉시 돌려준다. 실제 결과는 GET /pipeline/status/{jobId} 로
+// 폴링해서 PipelineStatusResponse로 받아야 한다.
+data class PipelineJobAckResponse(
     val ok: Boolean = false,
+    val jobId: String? = null,
+    val status: String? = null, // "processing"
+    val message: String? = null
+)
+
+// GET /api/pipeline/status/{jobId} 응답.
+// status: "processing"(아직 진행중) | "done"(완료 — 아래 필드들이 채워짐) | "error"(실패) | "not_found"(만료/서버재시작 등)
+data class PipelineStatusResponse(
+    val status: String? = null,
+    val error: String? = null,
     val title: String? = null,
     val imageFilenames: List<String> = emptyList(),
     val gmailMessageId: String? = null,

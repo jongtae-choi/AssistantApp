@@ -15,8 +15,9 @@ import com.jongtae.assistant.data.model.LedgerExtractResponse
 import com.jongtae.assistant.data.model.LedgerListResponse
 import com.jongtae.assistant.data.model.LedgerSaveRequest
 import com.jongtae.assistant.data.model.LedgerSaveResponse
-import com.jongtae.assistant.data.model.PhotoDocumentResponse
 import com.jongtae.assistant.data.model.PipelineAckResponse
+import com.jongtae.assistant.data.model.PipelineJobAckResponse
+import com.jongtae.assistant.data.model.PipelineStatusResponse
 import com.jongtae.assistant.data.model.RefineWithClaudeRequest
 import com.jongtae.assistant.data.model.ResearchRequest
 import com.jongtae.assistant.data.model.SaveOutputsRequest
@@ -30,6 +31,7 @@ import retrofit2.http.GET
 import retrofit2.http.Multipart
 import retrofit2.http.POST
 import retrofit2.http.Part
+import retrofit2.http.Path
 import retrofit2.http.Query
 
 // server.js(개인비서) 의 /assistant/api/... 엔드포인트와 매칭.
@@ -59,7 +61,9 @@ interface AssistantApiService {
         @Part("docType") docType: RequestBody
     ): PipelineAckResponse
 
-    // 사진 여러 장(+ 유튜브 링크, 주소록 매칭 등)을 문서로 정리 — 결과 이미지 여러 장을 동기 응답으로 받는다.
+    // 사진 여러 장(+ 유튜브 링크, 주소록 매칭 등)을 문서로 정리 — 시간이 오래 걸릴 수 있어(수십 초~수 분)
+    // 더 이상 결과를 동기로 기다리지 않는다. 서버가 즉시 jobId만 돌려주면, getPipelineStatus()로
+    // 폴링해서 완료를 확인해야 한다.
     // photos는 0장이어도 되지만(유튜브 링크만으로도 가능), Retrofit이 빈 리스트를 보내면 파트가 아예
     // 없는 요청이 되므로 서버 쪽 "사진, 텍스트/코드/docx 파일, 유튜브 링크 중 최소 하나" 검증과 맞는다.
     // matchContacts는 값이 있을 때만(=true일 때만) 파트를 실어 보낸다 — 문자열 "false"를 그대로 보내면
@@ -75,12 +79,17 @@ interface AssistantApiService {
         @Part("subject") subject: RequestBody?,
         @Part("youtubeUrl") youtubeUrl: RequestBody?,
         @Part("matchContacts") matchContacts: RequestBody?
-    ): PhotoDocumentResponse
+    ): PipelineJobAckResponse
 
     // 무료 AI(Gemini 등)가 만든 문서 초안(docStructure)을 Claude로 검토/보완한다.
     // 자동으로는 호출되지 않고, 사용자가 "클로드로 보완" 버튼을 눌렀을 때만 호출된다.
+    // 마찬가지로 즉시 jobId만 돌아오고, getPipelineStatus()로 폴링해야 한다.
     @POST("assistant/api/pipeline/refine-with-claude")
-    suspend fun refineWithClaude(@Body body: RefineWithClaudeRequest): PhotoDocumentResponse
+    suspend fun refineWithClaude(@Body body: RefineWithClaudeRequest): PipelineJobAckResponse
+
+    // photo-to-document / refine-with-claude 가 돌려준 jobId로 진행 상황(처리중/완료/실패)을 확인한다.
+    @GET("assistant/api/pipeline/status/{jobId}")
+    suspend fun getPipelineStatus(@Path("jobId") jobId: String): PipelineStatusResponse
 
     // 결과 이미지 내용을 보고 제목(파일명)을 자동 제안
     @POST("assistant/api/outputs/suggest-titles")
